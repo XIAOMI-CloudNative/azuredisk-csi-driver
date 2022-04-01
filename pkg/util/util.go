@@ -17,7 +17,10 @@ limitations under the License.
 package util
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -148,4 +151,42 @@ func (vl *VolumeLocks) Release(volumeID string) {
 	vl.mux.Lock()
 	defer vl.mux.Unlock()
 	vl.locks.Delete(volumeID)
+}
+
+func GetVmName() (VMName string, err error) {
+	url := "http://169.254.169.254/metadata/instance?api-version=2019-04-30"
+	method := "GET"
+
+	client := &http.Client{}
+	req, err := http.NewRequest(method, url, nil)
+
+	if err != nil {
+		return "", err
+	}
+	req.Header.Add("Metadata", "true")
+
+	res, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+	cloudMetadata := make(map[string]interface{})
+	err = json.Unmarshal(body, &cloudMetadata)
+	if err != nil {
+		return "", err
+	}
+	compute, ok := cloudMetadata["compute"]
+	if ok {
+		computeMap, ok := compute.(map[string]interface{})
+		if ok {
+			VMName, _ = computeMap["name"].(string)
+		}
+
+	}
+	return VMName, nil
 }

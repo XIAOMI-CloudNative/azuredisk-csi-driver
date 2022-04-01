@@ -304,6 +304,7 @@ func (d *Driver) ControllerGetVolume(context.Context, *csi.ControllerGetVolumeRe
 
 // ControllerPublishVolume attach an azure disk to a required node
 func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
+	klog.V(4).Info("Start ControllerPublishVolume.....................")
 	diskURI := req.GetVolumeId()
 	if len(diskURI) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Volume ID not provided")
@@ -328,11 +329,20 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 	if err != nil {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("Volume not found, failed with error: %v", err))
 	}
-
 	nodeID := req.GetNodeId()
 	if len(nodeID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
 	}
+
+	nodeInfo := strings.Split(nodeID, "@miks@")
+	if len(nodeInfo) != 2 {
+		klog.V(4).Infof("Split nodeID: %s  failed.", nodeID)
+		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
+	}
+	nodeID = nodeInfo[0]
+	vmNameStr := nodeInfo[1]
+	klog.V(4).Infof("Split nodeID, nodeID: %s,vmName: %s.", nodeID, vmNameStr)
+	vmName := types.NodeName(vmNameStr)
 
 	nodeName := types.NodeName(nodeID)
 	diskName, err := azureutils.GetDiskName(diskURI)
@@ -348,7 +358,8 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 
 	klog.V(2).Infof("GetDiskLun returned: %v. Initiating attaching volume %q to node %q.", err, diskURI, nodeName)
 
-	lun, vmState, err := d.cloud.GetDiskLun(diskName, diskURI, nodeName)
+	//use vmName
+	lun, vmState, err := d.cloud.GetDiskLun(diskName, diskURI, vmName)
 	if err == cloudprovider.InstanceNotFound {
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("failed to get azure instance id for node %q (%v)", nodeName, err))
 	}
@@ -361,7 +372,8 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 	if err == nil {
 		if vmState != nil && strings.ToLower(*vmState) == "failed" {
 			klog.Warningf("VM(%q) is in failed state, update VM first", nodeName)
-			if err := d.cloud.UpdateVM(ctx, nodeName); err != nil {
+			//use vmName
+			if err := d.cloud.UpdateVM(ctx, vmName); err != nil {
 				return nil, fmt.Errorf("update instance %q failed with %v", nodeName, err)
 			}
 		}
@@ -375,12 +387,19 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		klog.V(2).Infof("Trying to attach volume %q to node %q", diskURI, nodeName)
 
 		asyncAttach := isAsyncAttachEnabled(d.enableAsyncAttach, volumeContext)
-		lun, err = d.cloud.AttachDisk(ctx, asyncAttach, diskName, diskURI, nodeName, cachingMode, disk)
+
+		//use vmName
+		lun, err = d.cloud.AttachDisk(ctx, asyncAttach, diskName, diskURI, vmName, cachingMode, disk)
+		if err != nil {
+			klog.V(4).Infof("Test: 调用云接口AttachDisk. Error: %s", err.Error())
+		}
+
 		if err == nil {
 			klog.V(2).Infof("Attach operation successful: volume %q attached to node %q.", diskURI, nodeName)
 		} else {
 			if derr, ok := err.(*volerr.DanglingAttachError); ok {
-				if strings.EqualFold(string(nodeName), string(derr.CurrentNode)) {
+				//use vmName
+				if strings.EqualFold(string(vmName), string(derr.CurrentNode)) {
 					err := fmt.Errorf("volume %q is actually attached to current node %q, return error", diskURI, nodeName)
 					klog.Warningf("%v", err)
 					return nil, err
@@ -390,7 +409,8 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 					return nil, status.Errorf(codes.Internal, "Could not detach volume %q from node %q: %v", diskURI, derr.CurrentNode, err)
 				}
 				klog.V(2).Infof("Trying to attach volume %q to node %q again", diskURI, nodeName)
-				lun, err = d.cloud.AttachDisk(ctx, asyncAttach, diskName, diskURI, nodeName, cachingMode, disk)
+				//use vmName
+				lun, err = d.cloud.AttachDisk(ctx, asyncAttach, diskName, diskURI, vmName, cachingMode, disk)
 			}
 			if err != nil {
 				klog.Errorf("Attach volume %q to instance %q failed with %v", diskURI, nodeName, err)
@@ -422,7 +442,16 @@ func (d *Driver) ControllerUnpublishVolume(ctx context.Context, req *csi.Control
 	if len(nodeID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
 	}
-	nodeName := types.NodeName(nodeID)
+
+	nodeInfo := strings.Split(nodeID, "@miks@")
+	if len(nodeInfo) != 2 {
+		klog.V(4).Infof("Split nodeID: %s  failed.", nodeID)
+		return nil, status.Error(codes.InvalidArgument, "Node ID not provided")
+	}
+	nodeID = nodeInfo[0]
+	vmNameStr := nodeInfo[1]
+	klog.V(4).Infof("Split nodeID, nodeID: %s,vmName: %s.", nodeID, vmNameStr)
+	vmName := types.NodeName(vmNameStr)
 
 	diskName, err := azureutils.GetDiskName(diskURI)
 	if err != nil {
@@ -436,14 +465,15 @@ func (d *Driver) ControllerUnpublishVolume(ctx context.Context, req *csi.Control
 	}()
 
 	klog.V(2).Infof("Trying to detach volume %s from node %s", diskURI, nodeID)
-
-	if err := d.cloud.DetachDisk(ctx, diskName, diskURI, nodeName); err != nil {
+	//use vmName
+	if err := d.cloud.DetachDisk(ctx, diskName, diskURI, vmName); err != nil {
 		if strings.Contains(err.Error(), consts.ErrDiskNotFound) {
 			klog.Warningf("volume %s already detached from node %s", diskURI, nodeID)
 		} else {
 			return nil, status.Errorf(codes.Internal, "Could not detach volume %q from node %q: %v", diskURI, nodeID, err)
 		}
 	}
+
 	klog.V(2).Infof("detach volume %s from node %s successfully", diskURI, nodeID)
 	isOperationSucceeded = true
 

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	"k8s.io/apimachinery/pkg/types"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,7 +35,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
@@ -320,12 +320,21 @@ func (d *Driver) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetCapabi
 
 // NodeGetInfo return info of the node on which this plugin is running
 func (d *Driver) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
-	topology := &csi.Topology{
-		Segments: map[string]string{topologyKey: ""},
-	}
 
 	var failureDomainFromLabels, instanceTypeFromLabels string
 	var err error
+
+	//get vmName
+	vmName, err := volumehelper.GetVmName()
+	if err != nil {
+		klog.V(4).Infof("Get VmName failed. error: %v", err.Error())
+		klog.Fatal("Get VmName failed. please request url: curl -H Metadata:true \"http://169.254.169.254/metadata/instance?api-version=2019-04-30\" | jq ")
+	}
+	klog.V(4).Infof("vm name: %s.", vmName)
+
+	topology := &csi.Topology{
+		Segments: map[string]string{topologyKey: ""},
+	}
 
 	if d.supportZone {
 		var zone cloudprovider.Zone
@@ -333,9 +342,11 @@ func (d *Driver) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (
 			failureDomainFromLabels, instanceTypeFromLabels, err = getNodeInfoFromLabels(ctx, d.NodeID, d.cloud.KubeClient)
 		} else {
 			if runtime.GOOS == "windows" && (!d.cloud.UseInstanceMetadata || d.cloud.Metadata == nil) {
-				zone, err = d.cloud.VMSet.GetZoneByNodeName(d.NodeID)
+				//use vmName
+				zone, err = d.cloud.VMSet.GetZoneByNodeName(vmName)
 			} else {
-				zone, err = d.cloud.GetZone(ctx)
+				//use vmName
+				zone, err = d.cloud.VMSet.GetZoneByNodeName(vmName)
 			}
 			if err != nil {
 				klog.Warningf("get zone(%s) failed with: %v, fall back to get zone from node labels", d.NodeID, err)
@@ -376,7 +387,8 @@ func (d *Driver) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (
 				if !ok {
 					klog.Warningf("failed to get instances from cloud provider")
 				} else {
-					instanceType, err = instances.InstanceType(ctx, types.NodeName(d.NodeID))
+					//use vmName
+					instanceType, err = instances.InstanceType(ctx, types.NodeName(vmName))
 				}
 			}
 			if err != nil {
@@ -397,7 +409,7 @@ func (d *Driver) NodeGetInfo(ctx context.Context, req *csi.NodeGetInfoRequest) (
 	}
 
 	return &csi.NodeGetInfoResponse{
-		NodeId:             d.NodeID,
+		NodeId:             fmt.Sprintf("%s@miks@%s", d.NodeID, vmName),
 		MaxVolumesPerNode:  maxDataDiskCount,
 		AccessibleTopology: topology,
 	}, nil

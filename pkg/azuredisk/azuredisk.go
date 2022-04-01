@@ -190,7 +190,14 @@ func (d *Driver) Run(endpoint, kubeconfig string, disableAVSetNodes, testingMock
 	d.deviceHelper = optimization.NewSafeDeviceHelper()
 
 	if d.getPerfOptimizationEnabled() {
-		d.nodeInfo, err = optimization.NewNodeInfo(context.TODO(), d.getCloud(), d.NodeID)
+		//get vmName
+		vmName, err := volumehelper.GetVmName()
+		if err != nil {
+			klog.V(4).Infof("Get VmName failed. error: %v", err.Error())
+			klog.Fatal("Get VmName failed. please request url: curl -H Metadata:true \"http://169.254.169.254/metadata/instance?api-version=2019-04-30\" | jq ")
+		}
+		klog.V(4).Infof("vm name: %s.", vmName)
+		d.nodeInfo, err = optimization.NewNodeInfo(context.TODO(), d.getCloud(), vmName)
 		if err != nil {
 			klog.Warningf("Failed to get node info. Error: %v", err)
 		}
